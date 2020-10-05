@@ -196,20 +196,14 @@ internal win32_read_file_result Win32DebugReadFile(const char *FilePath)
     return Res;
 }
 
-internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Bytes, u32 ByteCount)
+
+// Vulkan stuff ///////////////////////////////////////////////////////////////////////////////
+
+struct vulkan_create_buffer_result
 {
-    VkShaderModuleCreateInfo ShaderModuleCreateInfo = {};
-    ShaderModuleCreateInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ShaderModuleCreateInfo.codeSize = ByteCount;
-    ShaderModuleCreateInfo.pCode    = (const uint32_t*)Bytes;
-    
-    VkShaderModule ShaderModule;
-    if (vkCreateShaderModule(Device, &ShaderModuleCreateInfo, NULL, &ShaderModule) != VK_SUCCESS) {
-        Assert(false); // TODO(jdiaz): Make Window globally accessible or pass it into this function in order to call Win32ErrorMessage
-    }
-    
-    return ShaderModule;
-}
+    VkBuffer       Buffer;
+    VkDeviceMemory Memory;
+};
 
 internal uint32_t VulkanFindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties)
 {
@@ -226,6 +220,54 @@ internal uint32_t VulkanFindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlag
     
     Assert(false && "Failed to find suitable memory type");
     return 0;
+}
+
+internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSize Size, VkBufferUsageFlags Usage, VkMemoryPropertyFlags Properties)
+{
+    vulkan_create_buffer_result Res = {};
+    
+    // create buffer
+    VkBufferCreateInfo VertexBufferCreateInfo = {};
+    VertexBufferCreateInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    VertexBufferCreateInfo.size        = Size;
+    VertexBufferCreateInfo.usage       = Usage;
+    VertexBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateBuffer(VulkanDevice, &VertexBufferCreateInfo, NULL, &Res.Buffer) != VK_SUCCESS) {
+        Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create vertex buffer");
+    }
+    
+    // alloc buffer memory
+    VkMemoryRequirements MemRequirements;
+    vkGetBufferMemoryRequirements(VulkanDevice, Res.Buffer, &MemRequirements);
+    
+    VkMemoryAllocateInfo MemAllocInfo = {};
+    MemAllocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    MemAllocInfo.allocationSize  = MemRequirements.size;
+    MemAllocInfo.memoryTypeIndex = VulkanFindMemoryType(MemRequirements.memoryTypeBits, Properties);
+    
+    if (vkAllocateMemory(VulkanDevice, &MemAllocInfo, NULL, &Res.Memory) != VK_SUCCESS) {
+        Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to allocate vertex buffer memory");
+    }
+    
+    vkBindBufferMemory(VulkanDevice, Res.Buffer, Res.Memory, 0);
+    
+    return Res;
+}
+
+internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Bytes, u32 ByteCount)
+{
+    VkShaderModuleCreateInfo ShaderModuleCreateInfo = {};
+    ShaderModuleCreateInfo.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    ShaderModuleCreateInfo.codeSize = ByteCount;
+    ShaderModuleCreateInfo.pCode    = (const uint32_t*)Bytes;
+    
+    VkShaderModule ShaderModule;
+    if (vkCreateShaderModule(Device, &ShaderModuleCreateInfo, NULL, &ShaderModule) != VK_SUCCESS) {
+        Assert(false); // TODO(jdiaz): Make Window globally accessible or pass it into this function in order to call Win32ErrorMessage
+    }
+    
+    return ShaderModule;
 }
 
 internal void VulkanCreateSwapchain(HWND Window)
@@ -624,36 +666,15 @@ internal void VulkanCreateSwapchain(HWND Window)
     {
         if (VulkanVertexBuffer == VK_NULL_HANDLE)
         {
-            // create buffer
-            VkBufferCreateInfo VertexBufferCreateInfo = {};
-            VertexBufferCreateInfo.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            VertexBufferCreateInfo.size        = sizeof(Vertices);
-            VertexBufferCreateInfo.usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-            VertexBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            
-            if (vkCreateBuffer(VulkanDevice, &VertexBufferCreateInfo, NULL, &VulkanVertexBuffer) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create vertex buffer");
-            }
-            
-            // alloc buffer memory
-            VkMemoryRequirements MemRequirements;
-            vkGetBufferMemoryRequirements(VulkanDevice, VulkanVertexBuffer, &MemRequirements);
-            
-            VkMemoryAllocateInfo MemAllocInfo = {};
-            MemAllocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            MemAllocInfo.allocationSize  = MemRequirements.size;
-            MemAllocInfo.memoryTypeIndex = VulkanFindMemoryType(MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT );
-            
-            if (vkAllocateMemory(VulkanDevice, &MemAllocInfo, NULL, &VulkanVertexBufferMemory) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to allocate vertex buffer memory");
-            }
-            
-            vkBindBufferMemory(VulkanDevice, VulkanVertexBuffer, VulkanVertexBufferMemory, 0);
+            vulkan_create_buffer_result CreateBufferResult =
+                VulkanCreateBuffer(Window, sizeof(Vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VulkanVertexBuffer       = CreateBufferResult.Buffer;
+            VulkanVertexBufferMemory = CreateBufferResult.Memory;
             
             // copy vertices into memory
             void *Data;
-            vkMapMemory(VulkanDevice, VulkanVertexBufferMemory, 0, VertexBufferCreateInfo.size, 0, &Data);
-            memcpy(Data, Vertices, VertexBufferCreateInfo.size);
+            vkMapMemory(VulkanDevice, VulkanVertexBufferMemory, 0, sizeof(Vertices), 0, &Data);
+            memcpy(Data, Vertices, sizeof(Vertices));
             vkUnmapMemory(VulkanDevice, VulkanVertexBufferMemory);
         }
     }
