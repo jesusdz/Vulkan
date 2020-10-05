@@ -53,6 +53,8 @@ VkFence          VulkanInFlightFences[MAX_FRAMES_IN_FLIGHT];
 VkFence          VulkanInFlightImages[4];
 VkBuffer         VulkanVertexBuffer;
 VkDeviceMemory   VulkanVertexBufferMemory = VK_NULL_HANDLE;
+VkBuffer         VulkanIndexBuffer;
+VkDeviceMemory   VulkanIndexBufferMemory = VK_NULL_HANDLE;
 
 
 struct vec2
@@ -72,9 +74,14 @@ struct vertex
 };
 
 const vertex Vertices[] = {
-    {{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const uint16_t Indices[] = {
+    0, 1, 2, 2, 3, 0
 };
 
 struct app_data
@@ -253,6 +260,42 @@ internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSiz
     vkBindBufferMemory(VulkanDevice, Res.Buffer, Res.Memory, 0);
     
     return Res;
+}
+
+internal void VulkanCopyBuffer(VkBuffer SrcBuffer, VkBuffer DstBuffer, VkDeviceSize Size)
+{
+    VkCommandBufferAllocateInfo AllocInfo = {};
+    AllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    AllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    AllocInfo.commandPool = VulkanCommandPool;
+    AllocInfo.commandBufferCount = 1;
+    
+    VkCommandBuffer CommandBuffer;
+    vkAllocateCommandBuffers(VulkanDevice, &AllocInfo, &CommandBuffer);
+    
+    VkCommandBufferBeginInfo BeginInfo = {};
+    BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    
+    vkBeginCommandBuffer(CommandBuffer, &BeginInfo);
+    
+    VkBufferCopy CopyRegion = {};
+    CopyRegion.srcOffset = 0;
+    CopyRegion.dstOffset = 0;
+    CopyRegion.size      = Size;
+    vkCmdCopyBuffer(CommandBuffer, SrcBuffer, DstBuffer, 1, &CopyRegion);
+    
+    vkEndCommandBuffer(CommandBuffer);
+    
+    VkSubmitInfo SubmitInfo = {};
+    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    SubmitInfo.commandBufferCount = 1;
+    SubmitInfo.pCommandBuffers    = &CommandBuffer;
+    
+    vkQueueSubmit(VulkanGraphicsQueue, 1, &SubmitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(VulkanGraphicsQueue);
+    
+    vkFreeCommandBuffers(VulkanDevice, VulkanCommandPool, 1, &CommandBuffer);
 }
 
 internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Bytes, u32 ByteCount)
@@ -662,24 +705,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         }
     }
     
-    // Vulkan: Vertex buffer
-    {
-        if (VulkanVertexBuffer == VK_NULL_HANDLE)
-        {
-            vulkan_create_buffer_result CreateBufferResult =
-                VulkanCreateBuffer(Window, sizeof(Vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            VulkanVertexBuffer       = CreateBufferResult.Buffer;
-            VulkanVertexBufferMemory = CreateBufferResult.Memory;
-            
-            // copy vertices into memory
-            void *Data;
-            vkMapMemory(VulkanDevice, VulkanVertexBufferMemory, 0, sizeof(Vertices), 0, &Data);
-            memcpy(Data, Vertices, sizeof(Vertices));
-            vkUnmapMemory(VulkanDevice, VulkanVertexBufferMemory);
-        }
-    }
-    
-    // Vulkan: Command pools
+    // Vulkan: Command pool
     {
         // command pool
         if (VulkanCommandPool == VK_NULL_HANDLE)
@@ -693,7 +719,68 @@ internal void VulkanCreateSwapchain(HWND Window)
                 Win32ErrorMessage(Window, PlatformError_Fatal, "Command pool could not be created");
             }
         }
-        
+    }
+    
+    // Vulkan: Vertex buffer
+    {
+        if (VulkanVertexBuffer == VK_NULL_HANDLE)
+        {
+            VkDeviceSize BufferSize = sizeof(Vertices);
+            
+            // temporary staging buffer
+            vulkan_create_buffer_result Staging =
+                VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            
+            // copy vertices into memory
+            void *Data;
+            vkMapMemory(VulkanDevice, Staging.Memory, 0, BufferSize, 0, &Data);
+            memcpy(Data, Vertices, BufferSize);
+            vkUnmapMemory(VulkanDevice, Staging.Memory);
+            
+            vulkan_create_buffer_result Vertex =
+                VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VulkanVertexBuffer       = Vertex.Buffer;
+            VulkanVertexBufferMemory = Vertex.Memory;
+            
+            VulkanCopyBuffer(Staging.Buffer, Vertex.Buffer, BufferSize);
+            
+            vkDestroyBuffer(VulkanDevice, Staging.Buffer, NULL);
+            vkFreeMemory(VulkanDevice, Staging.Memory, NULL);
+            
+        }
+    }
+    
+    // Vulkan: Index buffer
+    {
+        if (VulkanIndexBuffer == VK_NULL_HANDLE)
+        {
+            VkDeviceSize BufferSize = sizeof(Indices);
+            
+            // temporary staging buffer
+            vulkan_create_buffer_result Staging =
+                VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            
+            // copy indices into memory
+            void *Data;
+            vkMapMemory(VulkanDevice, Staging.Memory, 0, BufferSize, 0, &Data);
+            memcpy(Data, Indices, BufferSize);
+            vkUnmapMemory(VulkanDevice, Staging.Memory);
+            
+            vulkan_create_buffer_result Index =
+                VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VulkanIndexBuffer       = Index.Buffer;
+            VulkanIndexBufferMemory = Index.Memory;
+            
+            VulkanCopyBuffer(Staging.Buffer, Index.Buffer, BufferSize);
+            
+            vkDestroyBuffer(VulkanDevice, Staging.Buffer, NULL);
+            vkFreeMemory(VulkanDevice, Staging.Memory, NULL);
+            
+        }
+    }
+    
+    // Vulkan: Command buffers
+    {
         // command buffers
         VkCommandBufferAllocateInfo CommandBufferAllocInfo = {};
         CommandBufferAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -738,8 +825,11 @@ internal void VulkanCreateSwapchain(HWND Window)
             VkDeviceSize Offsets[] = {0};
             vkCmdBindVertexBuffers(VulkanCommandBuffers[i], 0, ArrayCount(VertexBuffers), VertexBuffers, Offsets);
             
+            vkCmdBindIndexBuffer(VulkanCommandBuffers[i], VulkanIndexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            
             // draw
-            vkCmdDraw(VulkanCommandBuffers[i], ArrayCount(Vertices), 1, 0, 0);
+            //vkCmdDraw(VulkanCommandBuffers[i], ArrayCount(Vertices), 1, 0, 0);
+            vkCmdDrawIndexed(VulkanCommandBuffers[i], ArrayCount(Indices), 1, 0, 0, 0);
             
             vkCmdEndRenderPass(VulkanCommandBuffers[i]);
             
@@ -1063,6 +1153,8 @@ internal void VulkanCleanup()
     
     vkDestroyBuffer(VulkanDevice, VulkanVertexBuffer, NULL);
     vkFreeMemory(VulkanDevice, VulkanVertexBufferMemory, NULL);
+    vkDestroyBuffer(VulkanDevice, VulkanIndexBuffer, NULL);
+    vkFreeMemory(VulkanDevice, VulkanIndexBufferMemory, NULL);
     
     vkDestroyCommandPool(VulkanDevice, VulkanCommandPool, NULL);
     
