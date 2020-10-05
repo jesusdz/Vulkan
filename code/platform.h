@@ -55,4 +55,6 @@ typedef double                 f64;
 
 #define local_persist static
 
+#define PI 3.14159265359
+
 #endif //PLATFORM_H
