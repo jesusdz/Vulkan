@@ -7,6 +7,9 @@
 
 #include "platform.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #define LOG(format, ...) \
 { \
 char Buffer[256]; \
@@ -57,6 +60,10 @@ VkBuffer         VulkanUniformBuffers[MAX_SWAPCHAIN_IMAGES];
 VkDeviceMemory   VulkanUniformBuffersMemory[MAX_SWAPCHAIN_IMAGES];
 VkDescriptorPool VulkanDescriptorPool;
 VkDescriptorSet  VulkanDescriptorSets[MAX_SWAPCHAIN_IMAGES];
+VkImage          VulkanTextureImage;
+VkDeviceMemory   VulkanTextureImageMemory;
+VkImageView      VulkanTextureImageView;
+VkSampler        VulkanTextureSampler;
 
 
 struct vec2
@@ -83,6 +90,7 @@ struct vertex
 {
     vec2 pos;
     vec3 color;
+    vec2 texCoord;
 };
 
 struct uniform_buffer_object
@@ -93,10 +101,10 @@ struct uniform_buffer_object
 };
 
 const vertex Vertices[] = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
 };
 
 const uint16_t Indices[] = {
@@ -193,9 +201,16 @@ inline u8* PushSize_(arena *Arena, u32 Size)
 #define PushStruct(Arena, type)       (type*)PushSize_(Arena,         sizeof(type))
 #define PushArray(Arena, type, Count) (type*)PushSize_(Arena, (Count)*sizeof(type))
 
-bool GlobalRunning = true;
+struct application
+{
+    HWND Window;
+    b32  Running;
+    b32  Resize;
+};
 
-bool GlobalResize = false;
+internal application App;
+
+
 
 enum { PlatformError_Fatal, PlatformError_Warning };
 
@@ -382,11 +397,16 @@ internal void Win32ErrorMessage(HWND Window, int Type, const char * Message)
     
     MessageBoxExA(Window, Message, Caption, MBoxType, 0);
     
+    // TODO(jesus): Make this happen inly if requested
+    DebugBreak();
+    
     if (Type == PlatformError_Fatal)
     {
         ExitProcess(1);
     }
 }
+
+#define ExitWithError(msg) Win32ErrorMessage(App.Window, PlatformError_Fatal, msg)
 
 struct win32_read_file_result
 {
@@ -474,7 +494,7 @@ internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSiz
     VertexBufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
     if (vkCreateBuffer(VulkanDevice, &VertexBufferCreateInfo, NULL, &Res.Buffer) != VK_SUCCESS) {
-        Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create vertex buffer");
+        ExitWithError("Failed to create vertex buffer");
     }
     
     // alloc buffer memory
@@ -487,7 +507,7 @@ internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSiz
     MemAllocInfo.memoryTypeIndex = VulkanFindMemoryType(MemRequirements.memoryTypeBits, Properties);
     
     if (vkAllocateMemory(VulkanDevice, &MemAllocInfo, NULL, &Res.Memory) != VK_SUCCESS) {
-        Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to allocate vertex buffer memory");
+        ExitWithError("Failed to allocate vertex buffer memory");
     }
     
     vkBindBufferMemory(VulkanDevice, Res.Buffer, Res.Memory, 0);
@@ -495,7 +515,7 @@ internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSiz
     return Res;
 }
 
-internal void VulkanCopyBuffer(VkBuffer SrcBuffer, VkBuffer DstBuffer, VkDeviceSize Size)
+internal VkCommandBuffer VulkanBeginSingleTimeCommands()
 {
     VkCommandBufferAllocateInfo AllocInfo = {};
     AllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -512,12 +532,11 @@ internal void VulkanCopyBuffer(VkBuffer SrcBuffer, VkBuffer DstBuffer, VkDeviceS
     
     vkBeginCommandBuffer(CommandBuffer, &BeginInfo);
     
-    VkBufferCopy CopyRegion = {};
-    CopyRegion.srcOffset = 0;
-    CopyRegion.dstOffset = 0;
-    CopyRegion.size      = Size;
-    vkCmdCopyBuffer(CommandBuffer, SrcBuffer, DstBuffer, 1, &CopyRegion);
-    
+    return CommandBuffer;
+}
+
+internal void VulkanEndSingleTimeCommands(VkCommandBuffer CommandBuffer)
+{
     vkEndCommandBuffer(CommandBuffer);
     
     VkSubmitInfo SubmitInfo = {};
@@ -531,6 +550,95 @@ internal void VulkanCopyBuffer(VkBuffer SrcBuffer, VkBuffer DstBuffer, VkDeviceS
     vkFreeCommandBuffers(VulkanDevice, VulkanCommandPool, 1, &CommandBuffer);
 }
 
+internal void VulkanCopyBuffer(VkBuffer SrcBuffer, VkBuffer DstBuffer, VkDeviceSize Size)
+{
+    VkCommandBuffer CommandBuffer = VulkanBeginSingleTimeCommands();
+    
+    VkBufferCopy CopyRegion = {};
+    CopyRegion.srcOffset = 0;
+    CopyRegion.dstOffset = 0;
+    CopyRegion.size      = Size;
+    vkCmdCopyBuffer(CommandBuffer, SrcBuffer, DstBuffer, 1, &CopyRegion);
+    
+    VulkanEndSingleTimeCommands(CommandBuffer);
+}
+
+internal void VulkanCopyBufferToImage(VkBuffer Buffer, VkImage Image, uint32_t Width, uint32_t Height)
+{
+    VkCommandBuffer CommandBuffer = VulkanBeginSingleTimeCommands();
+    
+    VkBufferImageCopy Region = {};
+    Region.bufferOffset                    = 0;
+    Region.bufferRowLength                 = 0;
+    Region.bufferImageHeight               = 0;
+    Region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    Region.imageSubresource.mipLevel       = 0;
+    Region.imageSubresource.baseArrayLayer = 0;
+    Region.imageSubresource.layerCount     = 1;
+    Region.imageOffset.x                   = 0;
+    Region.imageOffset.y                   = 0;
+    Region.imageOffset.z                   = 0;
+    Region.imageExtent.width               = Width;
+    Region.imageExtent.height              = Height;
+    Region.imageExtent.depth               = 1;
+    
+    vkCmdCopyBufferToImage(CommandBuffer, Buffer, Image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &Region);
+    
+    VulkanEndSingleTimeCommands(CommandBuffer);
+}
+
+internal void VulkanTransitionImageLayout(VkImage Image, VkFormat Format, VkImageLayout OldLayout, VkImageLayout NewLayout)
+{
+    VkCommandBuffer CommandBuffer = VulkanBeginSingleTimeCommands();
+    
+    VkImageMemoryBarrier Barrier = {};
+    Barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    Barrier.oldLayout                       = OldLayout;
+    Barrier.newLayout                       = NewLayout;
+    Barrier.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    Barrier.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
+    Barrier.image                           = Image;
+    Barrier.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    Barrier.subresourceRange.baseMipLevel   = 0;
+    Barrier.subresourceRange.levelCount     = 1;
+    Barrier.subresourceRange.baseArrayLayer = 0;
+    Barrier.subresourceRange.layerCount     = 1;
+    Barrier.srcAccessMask                   = 0;
+    Barrier.dstAccessMask                   = 0;
+    
+    VkPipelineStageFlags SrcStage;
+    VkPipelineStageFlags DstStage;
+    
+    if (OldLayout == VK_IMAGE_LAYOUT_UNDEFINED && NewLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+    {
+        Barrier.srcAccessMask = 0;
+        Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        SrcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        DstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    }
+    else if (OldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && NewLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL )
+    {
+        Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        Barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        SrcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        DstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    }
+    else
+    {
+        ExitWithError("Unsupported layout transition");
+    }
+    
+    vkCmdPipelineBarrier(CommandBuffer,
+                         SrcStage, DstStage,
+                         0,
+                         0, NULL,
+                         0, NULL,
+                         1, &Barrier
+                         );
+    
+    VulkanEndSingleTimeCommands(CommandBuffer);
+}
+
 internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Bytes, u32 ByteCount)
 {
     VkShaderModuleCreateInfo ShaderModuleCreateInfo = {};
@@ -540,10 +648,35 @@ internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Byte
     
     VkShaderModule ShaderModule;
     if (vkCreateShaderModule(Device, &ShaderModuleCreateInfo, NULL, &ShaderModule) != VK_SUCCESS) {
-        Assert(false); // TODO(jdiaz): Make Window globally accessible or pass it into this function in order to call Win32ErrorMessage
+        ExitWithError("Failed to create shader module");
     }
     
     return ShaderModule;
+}
+
+internal VkImageView VulkanCreateImageView(VkImage Image, VkFormat Format)
+{
+    VkImageViewCreateInfo ImageViewCreateInfo = {};
+    ImageViewCreateInfo.sType        = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    ImageViewCreateInfo.image        = Image;
+    ImageViewCreateInfo.viewType     = VK_IMAGE_VIEW_TYPE_2D;
+    ImageViewCreateInfo.format       = Format;
+    ImageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    ImageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    ImageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    ImageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    ImageViewCreateInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    ImageViewCreateInfo.subresourceRange.baseMipLevel   = 0;
+    ImageViewCreateInfo.subresourceRange.levelCount     = 1;
+    ImageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+    ImageViewCreateInfo.subresourceRange.layerCount     = 1;
+    
+    VkImageView ImageView;
+    if (vkCreateImageView(VulkanDevice, &ImageViewCreateInfo, NULL, &ImageView) != VK_SUCCESS) {
+        ExitWithError("Failed to create texture image view");
+    }
+    
+    return ImageView;
 }
 
 internal void VulkanCreateSwapchain(HWND Window)
@@ -648,7 +781,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         SwapchainCreateInfo.oldSwapchain   = VK_NULL_HANDLE;
         
         if (vkCreateSwapchainKHR(VulkanDevice, &SwapchainCreateInfo, NULL, &VulkanSwapchain) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create the swap chain");
+            ExitWithError("Failed to create the swap chain");
         }
         
         VulkanSwapchainImageCount = ImageCount;
@@ -658,24 +791,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         // create chapchain image views
         for (u32 i = 0; i < VulkanSwapchainImageCount; ++i)
         {
-            VkImageViewCreateInfo ImageViewCreateInfo = {};
-            ImageViewCreateInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            ImageViewCreateInfo.image    = VulkanSwapchainImages[ i ];
-            ImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            ImageViewCreateInfo.format   = VulkanSwapchainImageFormat;
-            ImageViewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-            ImageViewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-            ImageViewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-            ImageViewCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-            ImageViewCreateInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-            ImageViewCreateInfo.subresourceRange.baseMipLevel   = 0;
-            ImageViewCreateInfo.subresourceRange.levelCount     = 1;
-            ImageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
-            ImageViewCreateInfo.subresourceRange.layerCount     = 1;
-            
-            if (vkCreateImageView(VulkanDevice, &ImageViewCreateInfo, NULL, &VulkanSwapchainImageViews[i]) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create image views for the swap chain");
-            }
+            VulkanSwapchainImageViews[i] = VulkanCreateImageView(VulkanSwapchainImages[i], VulkanSwapchainImageFormat);
         }
     }
     
@@ -721,7 +837,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         RenderPassCreateInfo.pDependencies   = &SubpassDependency;
         
         if (vkCreateRenderPass(VulkanDevice, &RenderPassCreateInfo, NULL, &VulkanRenderPass) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Render pass could not be created");
+            ExitWithError("Render pass could not be created");
         }
     }
     
@@ -762,7 +878,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         VertexBindingDescription.stride    = sizeof(vertex);
         VertexBindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // Change to INSTANCE for instancing
         
-        VkVertexInputAttributeDescription VertexAttributesDescription[2] = {};
+        VkVertexInputAttributeDescription VertexAttributesDescription[3] = {};
         VertexAttributesDescription[0].binding  = 0;
         VertexAttributesDescription[0].location = 0;
         VertexAttributesDescription[0].format   = VK_FORMAT_R32G32_SFLOAT;
@@ -771,6 +887,10 @@ internal void VulkanCreateSwapchain(HWND Window)
         VertexAttributesDescription[1].location = 1;
         VertexAttributesDescription[1].format   = VK_FORMAT_R32G32B32_SFLOAT;
         VertexAttributesDescription[1].offset   = OffsetOf(vertex, color);
+        VertexAttributesDescription[2].binding  = 0;
+        VertexAttributesDescription[2].location = 2;
+        VertexAttributesDescription[2].format   = VK_FORMAT_R32G32_SFLOAT;
+        VertexAttributesDescription[2].offset   = OffsetOf(vertex, texCoord);
         
         VkPipelineVertexInputStateCreateInfo VertexInputCreateInfo = {};
         VertexInputCreateInfo.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -883,7 +1003,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         PipelineLayoutCreateInfo.pPushConstantRanges    = NULL;
         
         if (vkCreatePipelineLayout(VulkanDevice, &PipelineLayoutCreateInfo, NULL, &VulkanPipelineLayout) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Could not create the pipeline layout");
+            ExitWithError("Could not create the pipeline layout");
         }
         
         // Graphics pipeline!!!
@@ -910,7 +1030,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         GraphicsPipelineCreateInfo.basePipelineIndex   = -1;
         
         if (vkCreateGraphicsPipelines(VulkanDevice, VK_NULL_HANDLE, 1, &GraphicsPipelineCreateInfo, NULL, &VulkanGraphicsPipeline) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Graphics pipeline could not be created");
+            ExitWithError("Graphics pipeline could not be created");
         }
         
         // Free stuff
@@ -933,7 +1053,7 @@ internal void VulkanCreateSwapchain(HWND Window)
             FramebufferCreateInfo.layers          = 1;
             
             if (vkCreateFramebuffer(VulkanDevice, &FramebufferCreateInfo, NULL, &VulkanSwapchainFramebuffers[i]) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Swapchain framebuffer could not be created");
+                ExitWithError("Swapchain framebuffer could not be created");
             }
         }
     }
@@ -954,19 +1074,21 @@ internal void VulkanCreateSwapchain(HWND Window)
     // Vulkan: Descriptor pool / Descriptor set
     {
         // descriptor pool
-        VkDescriptorPoolSize DescriptorPoolSize = {};
-        DescriptorPoolSize.type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        DescriptorPoolSize.descriptorCount = VulkanSwapchainImageCount;
+        VkDescriptorPoolSize DescriptorPoolSize[2] = {};
+        DescriptorPoolSize[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        DescriptorPoolSize[0].descriptorCount = VulkanSwapchainImageCount;
+        DescriptorPoolSize[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        DescriptorPoolSize[1].descriptorCount = VulkanSwapchainImageCount;
         
         VkDescriptorPoolCreateInfo DescriptorPoolCreateInfo = {};
         DescriptorPoolCreateInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        DescriptorPoolCreateInfo.poolSizeCount = 1;
-        DescriptorPoolCreateInfo.pPoolSizes    = &DescriptorPoolSize;
+        DescriptorPoolCreateInfo.poolSizeCount = ArrayCount(DescriptorPoolSize);
+        DescriptorPoolCreateInfo.pPoolSizes    = DescriptorPoolSize;
         DescriptorPoolCreateInfo.maxSets       = VulkanSwapchainImageCount;
         
         if (vkCreateDescriptorPool(VulkanDevice, &DescriptorPoolCreateInfo, NULL, &VulkanDescriptorPool) != VK_SUCCESS)
         {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create descriptor pool");
+            ExitWithError("Failed to create descriptor pool");
         }
         
         // descriptor sets
@@ -982,7 +1104,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         DescriptorSetAllocInfo.pSetLayouts        = DescriptorSetLayouts;
         
         if (vkAllocateDescriptorSets(VulkanDevice, &DescriptorSetAllocInfo, VulkanDescriptorSets) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to allocate descriptor sets");
+            ExitWithError("Failed to allocate descriptor sets");
         }
         
         for (u32 i = 0; i < VulkanSwapchainImageCount; ++i)
@@ -992,18 +1114,34 @@ internal void VulkanCreateSwapchain(HWND Window)
             BufferInfo.offset = 0;
             BufferInfo.range  = sizeof(uniform_buffer_object);
             
-            VkWriteDescriptorSet DescriptorWrite = {};
-            DescriptorWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            DescriptorWrite.dstSet          = VulkanDescriptorSets[i];
-            DescriptorWrite.dstBinding      = 0;
-            DescriptorWrite.dstArrayElement = 0;
-            DescriptorWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            DescriptorWrite.descriptorCount = 1;
-            DescriptorWrite.pBufferInfo     = &BufferInfo;
-            DescriptorWrite.pImageInfo      = NULL;
-            DescriptorWrite.pTexelBufferView= NULL;
+            VkDescriptorImageInfo ImageInfo = {};
+            ImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            ImageInfo.imageView   = VulkanTextureImageView;
+            ImageInfo.sampler     = VulkanTextureSampler;
             
-            vkUpdateDescriptorSets(VulkanDevice, 1, &DescriptorWrite, 0, NULL);
+            VkWriteDescriptorSet DescriptorWrite[2] = {};
+            
+            DescriptorWrite[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            DescriptorWrite[0].dstSet          = VulkanDescriptorSets[i];
+            DescriptorWrite[0].dstBinding      = 0;
+            DescriptorWrite[0].dstArrayElement = 0;
+            DescriptorWrite[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            DescriptorWrite[0].descriptorCount = 1;
+            DescriptorWrite[0].pBufferInfo     = &BufferInfo;
+            DescriptorWrite[0].pImageInfo      = NULL;
+            DescriptorWrite[0].pTexelBufferView= NULL;
+            
+            DescriptorWrite[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            DescriptorWrite[1].dstSet          = VulkanDescriptorSets[i];
+            DescriptorWrite[1].dstBinding      = 1;
+            DescriptorWrite[1].dstArrayElement = 0;
+            DescriptorWrite[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            DescriptorWrite[1].descriptorCount = 1;
+            DescriptorWrite[1].pBufferInfo     = NULL;
+            DescriptorWrite[1].pImageInfo      = &ImageInfo;
+            DescriptorWrite[1].pTexelBufferView= NULL;
+            
+            vkUpdateDescriptorSets(VulkanDevice, ArrayCount(DescriptorWrite), DescriptorWrite, 0, NULL);
         }
     }
     
@@ -1017,7 +1155,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         CommandBufferAllocInfo.commandBufferCount = (uint32_t) VulkanSwapchainImageCount;
         
         if (vkAllocateCommandBuffers(VulkanDevice, &CommandBufferAllocInfo, VulkanCommandBuffers) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Command buffers could not be created");
+            ExitWithError("Command buffers could not be created");
         }
         
         // start command buffer recording
@@ -1029,7 +1167,7 @@ internal void VulkanCreateSwapchain(HWND Window)
             BeginInfo.pInheritanceInfo = NULL; // for secondary only
             
             if (vkBeginCommandBuffer(VulkanCommandBuffers[i], &BeginInfo) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to begin recording command buffer");
+                ExitWithError("Failed to begin recording command buffer");
             }
             
             // start render pass
@@ -1064,7 +1202,7 @@ internal void VulkanCreateSwapchain(HWND Window)
             vkCmdEndRenderPass(VulkanCommandBuffers[i]);
             
             if (vkEndCommandBuffer(VulkanCommandBuffers[i]) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to record command buffer");
+                ExitWithError("Failed to record command buffer");
             }
         }
     }
@@ -1146,7 +1284,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
             
             if (!LayerFound)
             {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Could not find the validation layer");
+                ExitWithError("Could not find the validation layer");
             }
         }
     }
@@ -1175,7 +1313,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
 #endif
         
         if ( vkCreateInstance(&CreateInfo, NULL, &VulkanInstance) != VK_SUCCESS ) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create Vulkan instance");
+            ExitWithError("Failed to create Vulkan instance");
         }
     }
     
@@ -1191,7 +1329,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         SurfaceCreateInfo.hinstance = hInstance;
         
         if (vkCreateWin32SurfaceKHR(VulkanInstance, &SurfaceCreateInfo, NULL, &VulkanSurface) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create a Vulkan surface");
+            ExitWithError("Failed to create a Vulkan surface");
         }
     }
     
@@ -1240,7 +1378,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
             b32 AllRequiredExtensionsFound = true;
             for (u32 req_idx = 0; req_idx < ArrayCount(RequiredDeviceExtensions); ++req_idx)
             {
-                bool RequiredExtensionFound = false;
+                b32 RequiredExtensionFound = false;
                 for (u32 ext_idx = 0; ext_idx < DeviceExtensionsCount; ++ext_idx)
                 {
                     if (StringsAreEqual(RequiredDeviceExtensions[req_idx], DeviceExtensions[ext_idx].extensionName))
@@ -1291,7 +1429,8 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
             VkPhysicalDeviceFeatures DeviceFeatures;
             vkGetPhysicalDeviceFeatures( PhysicalDevices[ i ], &DeviceFeatures);
             
-            if (!DeviceFeatures.geometryShader) Score = 0;
+            if (!DeviceFeatures.geometryShader)    Score = 0;
+            if (!DeviceFeatures.samplerAnisotropy) Score = 0;
             
             
             // Get the most suitable device found so far
@@ -1305,7 +1444,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         }
         
         if (BestScore == 0) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to find a proper Vulkan physical device");
+            ExitWithError("Failed to find a proper Vulkan physical device");
         }
     }
     
@@ -1325,6 +1464,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         }
         
         VkPhysicalDeviceFeatures DeviceFeatures = {};
+        DeviceFeatures.samplerAnisotropy = VK_TRUE;
         // TODO(jdiaz): Fill this structure when we know the features we need
         
         VkDeviceCreateInfo DeviceCreateInfo = {};
@@ -1342,7 +1482,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
 #endif
         
         if (vkCreateDevice(VulkanPhysicalDevice, &DeviceCreateInfo, NULL, &VulkanDevice) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create Vulkan logical device");
+            ExitWithError("Failed to create Vulkan logical device");
         }
         
         vkGetDeviceQueue(VulkanDevice, VulkanGraphicsQueueFamily, 0, &VulkanGraphicsQueue);
@@ -1359,7 +1499,104 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         CmdPoolCreateInfo.flags            = 0; // flags to indicate the frequency of change of commands
         
         if (vkCreateCommandPool(VulkanDevice, &CmdPoolCreateInfo, NULL, &VulkanCommandPool) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Command pool could not be created");
+            ExitWithError("Command pool could not be created");
+        }
+    }
+    
+    // Vulkan: Texture image / texture image view
+    {
+        // read image
+        int TexWidth, TexHeight, TexChannels;
+        stbi_uc* Pixels = stbi_load("texture.jpg", &TexWidth, &TexHeight, &TexChannels, STBI_rgb_alpha);
+        if (!Pixels) {
+            ExitWithError("Failed to load texture.jpg");
+        }
+        
+        // staging buffer
+        VkDeviceSize ImageSize = TexWidth * TexHeight * 4;
+        vulkan_create_buffer_result Staging = 
+            VulkanCreateBuffer(Window, ImageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        
+        void* Data;
+        vkMapMemory(VulkanDevice, Staging.Memory, 0, ImageSize, 0, &Data);
+        memcpy(Data, Pixels, ImageSize);
+        vkUnmapMemory(VulkanDevice, Staging.Memory);
+        
+        stbi_image_free(Pixels);
+        
+        // TODO(jesus): Extract the following code into a function
+        // create image
+        VkImageCreateInfo ImageCreateInfo = {};
+        ImageCreateInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ImageCreateInfo.imageType     = VK_IMAGE_TYPE_2D;
+        ImageCreateInfo.extent.width  = TexWidth;
+        ImageCreateInfo.extent.height = TexHeight;
+        ImageCreateInfo.extent.depth  = 1;
+        ImageCreateInfo.mipLevels     = 1;
+        ImageCreateInfo.arrayLayers   = 1;
+        ImageCreateInfo.format        = VK_FORMAT_R8G8B8A8_SRGB;
+        ImageCreateInfo.tiling        = VK_IMAGE_TILING_OPTIMAL; // implementation defined
+        ImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ImageCreateInfo.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ImageCreateInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+        ImageCreateInfo.samples       = VK_SAMPLE_COUNT_1_BIT; // only for multisampled attachments
+        ImageCreateInfo.flags         = 0;
+        
+        if (vkCreateImage(VulkanDevice, &ImageCreateInfo, NULL, &VulkanTextureImage) != VK_SUCCESS) {
+            ExitWithError("Failed to create image");
+        }
+        
+        // create image memory
+        VkMemoryRequirements MemRequirements;
+        vkGetImageMemoryRequirements(VulkanDevice, VulkanTextureImage, &MemRequirements);
+        
+        VkMemoryAllocateInfo AllocInfo = {};
+        AllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        AllocInfo.allocationSize = MemRequirements.size;
+        AllocInfo.memoryTypeIndex = VulkanFindMemoryType(MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        
+        if (vkAllocateMemory(VulkanDevice, &AllocInfo, NULL, &VulkanTextureImageMemory) != VK_SUCCESS) {
+            ExitWithError("Failed to allocate image memory");
+        }
+        
+        vkBindImageMemory(VulkanDevice, VulkanTextureImage, VulkanTextureImageMemory, 0);
+        //TODO(jesus): The function should finish here
+        
+        VulkanTransitionImageLayout(VulkanTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VulkanCopyBufferToImage(Staging.Buffer, VulkanTextureImage, TexWidth, TexHeight);
+        VulkanTransitionImageLayout(VulkanTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        
+        vkDestroyBuffer(VulkanDevice, Staging.Buffer, NULL);
+        vkFreeMemory(VulkanDevice, Staging.Memory, NULL);
+    }
+    
+    // Vulkan: Texture image view
+    {
+        VulkanTextureImageView = VulkanCreateImageView(VulkanTextureImage, VK_FORMAT_R8G8B8A8_SRGB);
+    }
+    
+    // Vulkan: Texture sampler
+    {
+        VkSamplerCreateInfo SamplerCreateInfo = {};
+        SamplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        SamplerCreateInfo.magFilter               = VK_FILTER_LINEAR;
+        SamplerCreateInfo.minFilter               = VK_FILTER_LINEAR;
+        SamplerCreateInfo.addressModeU            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        SamplerCreateInfo.addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        SamplerCreateInfo.addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        SamplerCreateInfo.anisotropyEnable        = VK_TRUE;
+        SamplerCreateInfo.maxAnisotropy           = 16.0f;
+        SamplerCreateInfo.borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        SamplerCreateInfo.unnormalizedCoordinates = VK_FALSE;
+        SamplerCreateInfo.compareEnable           = VK_FALSE;             // PCF for shadow maps
+        SamplerCreateInfo.compareOp               = VK_COMPARE_OP_ALWAYS; // PCF for shadow maps
+        SamplerCreateInfo.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        SamplerCreateInfo.mipLodBias              = 0.0f;
+        SamplerCreateInfo.minLod                  = 0.0f;
+        SamplerCreateInfo.maxLod                  = 0.0f;
+        
+        if (vkCreateSampler(VulkanDevice, &SamplerCreateInfo, NULL, &VulkanTextureSampler) != VK_SUCCESS) {
+            ExitWithError("Failed to create texture sampler");
         }
     }
     
@@ -1422,13 +1659,22 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         UboLayoutBinding.stageFlags         = VK_SHADER_STAGE_VERTEX_BIT;
         UboLayoutBinding.pImmutableSamplers = NULL;
         
+        VkDescriptorSetLayoutBinding SamplerLayoutBinding = {};
+        SamplerLayoutBinding.binding            = 1;
+        SamplerLayoutBinding.descriptorCount    = 1; // more than 1 if it is an array
+        SamplerLayoutBinding.descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        SamplerLayoutBinding.pImmutableSamplers = NULL;
+        SamplerLayoutBinding.stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT;
+        
+        VkDescriptorSetLayoutBinding Bindings[] = {UboLayoutBinding, SamplerLayoutBinding};
+        
         VkDescriptorSetLayoutCreateInfo DescriptorSetLayoutCreateInfo = {};
         DescriptorSetLayoutCreateInfo.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        DescriptorSetLayoutCreateInfo.bindingCount = 1;
-        DescriptorSetLayoutCreateInfo.pBindings    = &UboLayoutBinding;
+        DescriptorSetLayoutCreateInfo.bindingCount = ArrayCount(Bindings);
+        DescriptorSetLayoutCreateInfo.pBindings    = Bindings;
         
         if (vkCreateDescriptorSetLayout(VulkanDevice, &DescriptorSetLayoutCreateInfo, NULL, &VulkanDescriptorSetLayout) != VK_SUCCESS) {
-            Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create descriptor set layout");
+            ExitWithError("Failed to create descriptor set layout");
         }
     }
     
@@ -1448,7 +1694,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
             if (vkCreateSemaphore(VulkanDevice, &SemaphoreCreateInfo, NULL, &VulkanImageAvailableSemaphore[i]) != VK_SUCCESS
                 || vkCreateSemaphore(VulkanDevice, &SemaphoreCreateInfo, NULL, &VulkanRenderFinishedSemaphore[i]) != VK_SUCCESS
                 || vkCreateFence(VulkanDevice, &FenceCreateInfo, NULL, &VulkanInFlightFences[i]) != VK_SUCCESS) {
-                Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to create semaphores");
+                ExitWithError("Failed to create semaphores");
             }
         }
         
@@ -1471,6 +1717,11 @@ internal void VulkanCleanup()
     }
     
     VulkanCleanupSwapchain();
+    
+    vkDestroySampler(VulkanDevice, VulkanTextureSampler, NULL);
+    vkDestroyImageView(VulkanDevice, VulkanTextureImageView, NULL);
+    vkDestroyImage(VulkanDevice, VulkanTextureImage, NULL);
+    vkFreeMemory(VulkanDevice, VulkanTextureImageMemory, NULL);
     
     vkDestroyDescriptorSetLayout(VulkanDevice, VulkanDescriptorSetLayout, NULL);
     
@@ -1513,7 +1764,7 @@ LRESULT CALLBACK WinProc(HWND Window,      // handle to window
         
         case WM_SIZE:
         // Set the size and position of the window
-        GlobalResize = true;
+        App.Resize = true;
         return 0;
         
         case WM_LBUTTONDOWN:
@@ -1525,13 +1776,13 @@ LRESULT CALLBACK WinProc(HWND Window,      // handle to window
         case WM_MOUSEMOVE:
         // Handle mouse button events
         {
-            const bool ShiftKeyIsDown = wParam & MK_SHIFT;
-            const bool CtrlKeyIsDown  = wParam & MK_CONTROL;
-            const bool LButtonIsDown  = wParam & MK_LBUTTON;
-            const bool RButtonIsDown  = wParam & MK_RBUTTON;
-            const bool MButtonIsDown  = wParam & MK_MBUTTON;
-            const i32  MouseX         = LO_WORD(lParam);
-            const i32  MouseY         = HI_WORD(lParam);
+            const b32 ShiftKeyIsDown = wParam & MK_SHIFT;
+            const b32 CtrlKeyIsDown  = wParam & MK_CONTROL;
+            const b32 LButtonIsDown  = wParam & MK_LBUTTON;
+            const b32 RButtonIsDown  = wParam & MK_RBUTTON;
+            const b32 MButtonIsDown  = wParam & MK_MBUTTON;
+            const i32  MouseX        = LO_WORD(lParam);
+            const i32  MouseY        = HI_WORD(lParam);
             /*
             char Buffer[256];
             wsprintf(Buffer, "Mouse position X:%d Y:%d\n", MouseX, MouseY);
@@ -1558,7 +1809,7 @@ LRESULT CALLBACK WinProc(HWND Window,      // handle to window
         
         case WM_DESTROY: 
         // Clean up window-specific data objects. 
-        GlobalRunning = false;
+        App.Running = false;
         
         return 0; 
         
@@ -1602,17 +1853,21 @@ int WinMain(
         WindowHeight = WindowRect.bottom - WindowRect.top;
     }
     
-    HWND Window = CreateWindowExA(WS_EX_APPWINDOW,
-                                  "Platform template",
-                                  "Platform template",
-                                  WindowStyle,
-                                  CW_USEDEFAULT, CW_USEDEFAULT,
-                                  WindowWidth, WindowHeight,
-                                  NULL,
-                                  NULL,
-                                  hInstance,
-                                  NULL
-                                  );
+    HWND Window  = CreateWindowExA(WS_EX_APPWINDOW,
+                                   "Platform template",
+                                   "Platform template",
+                                   WindowStyle,
+                                   CW_USEDEFAULT, CW_USEDEFAULT,
+                                   WindowWidth, WindowHeight,
+                                   NULL,
+                                   NULL,
+                                   hInstance,
+                                   NULL
+                                   );
+    
+    App.Resize  = false;
+    App.Running = true;
+    App.Window  = Window;
     
     if ( Window )
     {
@@ -1636,7 +1891,7 @@ int WinMain(
         u32 CurrentFrame = 0;
         
         MSG Msg = {};
-        while ( GlobalRunning )
+        while ( App.Running )
         {
             while ( PeekMessageA(&Msg,
                                  Window,
@@ -1674,7 +1929,7 @@ int WinMain(
                 }
                 else if (Res != VK_SUCCESS && Res != VK_SUBOPTIMAL_KHR)
                 {
-                    Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to acquire swapchain image");
+                    ExitWithError("Failed to acquire swapchain image");
                 }
                 
                 // this is just in case the image returned by vkAquireNextImage is not consecutive
@@ -1717,7 +1972,7 @@ int WinMain(
                 
                 if (vkQueueSubmit(VulkanGraphicsQueue, 1, &SubmitInfo, 
                                   VulkanInFlightFences[CurrentFrame]) != VK_SUCCESS) {
-                    Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to submit draw command buffer");
+                    ExitWithError("Failed to submit draw command buffer");
                 }
                 
                 VkSwapchainKHR Swapchains[] = {VulkanSwapchain};
@@ -1734,16 +1989,16 @@ int WinMain(
                 
                 Res = vkQueuePresentKHR(VulkanPresentQueue, &PresentInfo);
                 
-                if (Res == VK_ERROR_OUT_OF_DATE_KHR || Res == VK_SUBOPTIMAL_KHR || GlobalResize)
+                if (Res == VK_ERROR_OUT_OF_DATE_KHR || Res == VK_SUBOPTIMAL_KHR || App.Resize)
                 {
-                    GlobalResize = false;
+                    App.Resize = false;
                     vkDeviceWaitIdle(VulkanDevice);
                     VulkanCleanupSwapchain();
                     VulkanCreateSwapchain(Window);
                 }
                 else if (Res != VK_SUCCESS)
                 {
-                    Win32ErrorMessage(Window, PlatformError_Fatal, "Failed to present swapchain image");
+                    ExitWithError("Failed to present swapchain image");
                 }
                 
                 // NOTE(jdiaz): Not needed because we are using fences
