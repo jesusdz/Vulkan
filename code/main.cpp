@@ -7,7 +7,6 @@
 
 #include "platform.h"
 
-
 #define LOG(format, ...) \
 { \
 char Buffer[256]; \
@@ -23,10 +22,6 @@ OutputDebugStringA(Buffer); \
 #define DEFAULT_WINDOW_HEIGHT 768
 
 #define MAX_SWAPCHAIN_IMAGES 4
-
-bool GlobalRunning = true;
-
-bool GlobalResize = false;
 
 // Vulkan stuff
 VkInstance       VulkanInstance;
@@ -126,13 +121,68 @@ struct arena
     u8* Buffer;
 };
 
+struct scratch_block
+{
+    arena Arena;
+    
+    scratch_block();
+    scratch_block(u64 Size);
+    ~scratch_block();
+    
+    operator arena*() { return &Arena; }
+};
+
+struct scratch_memory
+{
+    u32 Size;
+    u32 Head;
+    u8* Buffer;
+};
+
+scratch_memory GlobalScratchMemory;
+
+u8* CommitScratchMemoryBlock(u64 Size)
+{
+    Assert(GlobalScratchMemory.Head + Size <= GlobalScratchMemory.Size);
+    LPVOID BaseAddress = (LPVOID) (GlobalScratchMemory.Buffer + GlobalScratchMemory.Head);
+    u8* Res = (u8*)VirtualAlloc(BaseAddress, Size, MEM_COMMIT, PAGE_READWRITE);
+    GlobalScratchMemory.Head += Size;
+    return Res;
+}
+
+void DecommitScratchMemoryBlock(u8* Base, u64 Size)
+{
+    Assert(Base >= GlobalScratchMemory.Buffer && Base + Size <= GlobalScratchMemory.Buffer + GlobalScratchMemory.Size);
+    BOOL Success = VirtualFree(Base, Size, MEM_DECOMMIT);
+    Assert(Success);
+}
+
+scratch_block::scratch_block()
+{
+    Arena.Size   = MB(1);
+    Arena.Head   = 0;
+    Arena.Buffer = CommitScratchMemoryBlock(Arena.Size);
+}
+
+scratch_block::scratch_block(u64 Size)
+{
+    Arena.Size   = Size;
+    Arena.Head   = 0;
+    Arena.Buffer = CommitScratchMemoryBlock(Arena.Size);
+}
+
+scratch_block::~scratch_block()
+{
+    DecommitScratchMemoryBlock(Arena.Buffer, Arena.Size);
+}
+
 inline arena MakeArena(u8* Buffer, u32 Size)
 {
     arena Arena = { Size, 0, Buffer };
     return Arena;
 }
 
-u8* PushSize_(arena *Arena, u32 Size)
+inline u8* PushSize_(arena *Arena, u32 Size)
 {
     Assert(Arena->Head + Size <= Arena->Size);
     u8* HeadPtr = Arena->Buffer + Arena->Head;
@@ -142,6 +192,10 @@ u8* PushSize_(arena *Arena, u32 Size)
 
 #define PushStruct(Arena, type)       (type*)PushSize_(Arena,         sizeof(type))
 #define PushArray(Arena, type, Count) (type*)PushSize_(Arena, (Count)*sizeof(type))
+
+bool GlobalRunning = true;
+
+bool GlobalResize = false;
 
 enum { PlatformError_Fatal, PlatformError_Warning };
 
@@ -1565,9 +1619,14 @@ int WinMain(
         // Memory initialization
         
         u32 MemorySize   = MB(512);
-        u8* MemoryBuffer = (u8*)VirtualAlloc(0, MemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+        u8* MemoryBuffer = (u8*)VirtualAlloc(NULL, MemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
         Assert(MemoryBuffer);
         arena Arena      = MakeArena(MemoryBuffer, MemorySize);
+        
+        GlobalScratchMemory.Size = GB(2);
+        GlobalScratchMemory.Head = 0;
+        GlobalScratchMemory.Buffer = (u8*)VirtualAlloc(NULL, GlobalScratchMemory.Size, MEM_RESERVE, PAGE_READWRITE);
+        Assert(GlobalScratchMemory.Buffer);
         
         app_data* Data = PushStruct(&Arena, app_data);
         
@@ -1632,7 +1691,7 @@ int WinMain(
                 Angle += 0.01f;
                 uniform_buffer_object UBO = {};
                 UBO.model = Rotation(Radians(Angle), V3(0.0, 0.0, 1.0));
-                UBO.view  = LookAt(V3(2.0, 2.0, 2.0), V3(0.0, 0.0, 0.0), V3(0.0, 0.0, 1.0));
+                UBO.view  = LookAt(V3(2.0, 2.0, 2.0), V3(0.0, 0.0, 0.0), V3(0.0, 1.0, 0.0));
                 UBO.proj  = Perspective(Radians(45.0f), VulkanSwapchainExtent.width / (f32)VulkanSwapchainExtent.height, 0.1f, 10.0f);
                 UBO.proj.data[1][1] *= -1.0f;
                 
@@ -1692,6 +1751,9 @@ int WinMain(
                 
                 CurrentFrame = (CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
             }
+            
+            // Reset scratch memory
+            GlobalScratchMemory.Head = 0;
         }
         
         VulkanCleanup();
