@@ -19,12 +19,108 @@ OutputDebugStringA(Buffer); \
 
 #define INVALID_INDEX U32_MAX
 
-#define MAX_FRAMES_IN_FLIGHT 2
-
 #define DEFAULT_WINDOW_WIDTH 1024
 #define DEFAULT_WINDOW_HEIGHT 768
 
 #define MAX_SWAPCHAIN_IMAGES 4
+#define MAX_FRAMES_IN_FLIGHT 2
+
+
+// Types //////////////////////////////////////////////////////////////////////////////////////////
+
+struct vec2
+{
+    f32 x, y;
+};
+
+struct vec3
+{
+    f32 x, y, z;
+};
+
+struct mat3
+{
+    f32 data[3][3];
+};
+
+struct mat4
+{
+    f32 data[4][4];
+};
+
+struct vertex
+{
+    vec2 pos;
+    vec3 color;
+    vec2 texCoord;
+};
+
+struct uniform_buffer_object
+{
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+};
+
+struct arena
+{
+    u32 Size;
+    u32 Head;
+    u8* Buffer;
+};
+
+struct scratch_block
+{
+    arena Arena;
+    
+    scratch_block();
+    scratch_block(u64 Size);
+    ~scratch_block();
+    
+    operator arena*() { return &Arena; }
+};
+
+struct scratch_memory
+{
+    u32 Size;
+    u32 Head;
+    u8* Buffer;
+};
+
+struct app_data
+{
+    // Vulkan info
+    uint32_t                  VkExtensionPropertyCount;
+    VkExtensionProperties*    VkExtensionProperties;
+    uint32_t                  VkLayerPropertyCount;
+    VkLayerProperties*        VkLayerProperties;
+    VkPhysicalDevice          VkPhysicalDevice;
+    // TODO(jdiaz): Other queue indices go here
+};
+
+struct application
+{
+    HWND           Window;
+    HINSTANCE      Instance;
+    b32            Running;
+    b32            Resize;
+    scratch_memory ScratchMemory;
+};
+
+struct win32_read_file_result
+{
+    u8* Bytes;
+    u32 ByteCount;
+};
+
+struct vulkan_create_buffer_result
+{
+    VkBuffer       Buffer;
+    VkDeviceMemory Memory;
+};
+
+
+// Globals ////////////////////////////////////////////////////////////////////////////////////////
 
 // Vulkan stuff
 VkInstance       VulkanInstance;
@@ -65,40 +161,7 @@ VkDeviceMemory   VulkanTextureImageMemory;
 VkImageView      VulkanTextureImageView;
 VkSampler        VulkanTextureSampler;
 
-
-struct vec2
-{
-    f32 x, y;
-};
-
-struct vec3
-{
-    f32 x, y, z;
-};
-
-struct mat3
-{
-    f32 data[3][3];
-};
-
-struct mat4
-{
-    f32 data[4][4];
-};
-
-struct vertex
-{
-    vec2 pos;
-    vec3 color;
-    vec2 texCoord;
-};
-
-struct uniform_buffer_object
-{
-    mat4 model;
-    mat4 view;
-    mat4 proj;
-};
+internal application App;
 
 const vertex Vertices[] = {
     {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
@@ -111,56 +174,21 @@ const uint16_t Indices[] = {
     0, 1, 2, 2, 3, 0
 };
 
-struct app_data
-{
-    // Vulkan info
-    uint32_t                  VkExtensionPropertyCount;
-    VkExtensionProperties*    VkExtensionProperties;
-    uint32_t                  VkLayerPropertyCount;
-    VkLayerProperties*        VkLayerProperties;
-    VkPhysicalDevice          VkPhysicalDevice;
-    // TODO(jdiaz): Other queue indices go here
-};
 
-struct arena
-{
-    u32 Size;
-    u32 Head;
-    u8* Buffer;
-};
-
-struct scratch_block
-{
-    arena Arena;
-    
-    scratch_block();
-    scratch_block(u64 Size);
-    ~scratch_block();
-    
-    operator arena*() { return &Arena; }
-};
-
-struct scratch_memory
-{
-    u32 Size;
-    u32 Head;
-    u8* Buffer;
-};
-
-scratch_memory GlobalScratchMemory;
+// Functions //////////////////////////////////////////////////////////////////////////////////////
 
 u8* CommitScratchMemoryBlock(u64 Size)
 {
-    Assert(GlobalScratchMemory.Head + Size <= GlobalScratchMemory.Size);
-    LPVOID BaseAddress = (LPVOID) (GlobalScratchMemory.Buffer + GlobalScratchMemory.Head);
+    Assert(App.ScratchMemory.Head + Size <= App.ScratchMemory.Size);
+    LPVOID BaseAddress = (LPVOID) (App.ScratchMemory.Buffer + App.ScratchMemory.Head);
     u8* Res = (u8*)VirtualAlloc(BaseAddress, Size, MEM_COMMIT, PAGE_READWRITE);
-    GlobalScratchMemory.Head += Size;
+    App.ScratchMemory.Head += Size;
     return Res;
 }
 
 void DecommitScratchMemoryBlock(u8* Base, u64 Size)
 {
-    Assert(Base >= GlobalScratchMemory.Buffer && Base + Size <= GlobalScratchMemory.Buffer + GlobalScratchMemory.Size);
+    Assert(Base >= App.ScratchMemory.Buffer && Base + Size <= App.ScratchMemory.Buffer + App.ScratchMemory.Size);
     BOOL Success = VirtualFree(Base, Size, MEM_DECOMMIT);
     Assert(Success);
 }
@@ -201,18 +229,6 @@ inline u8* PushSize_(arena *Arena, u32 Size)
 #define PushStruct(Arena, type)       (type*)PushSize_(Arena,         sizeof(type))
 #define PushArray(Arena, type, Count) (type*)PushSize_(Arena, (Count)*sizeof(type))
 
-struct application
-{
-    HWND Window;
-    b32  Running;
-    b32  Resize;
-};
-
-internal application App;
-
-
-
-enum { PlatformError_Fatal, PlatformError_Warning };
 
 internal b32 StringsAreEqual(const char * A, const char * B)
 {
@@ -380,6 +396,8 @@ internal mat4 Perspective(f32 FovY, f32 Aspect, f32 Near, f32 Far)
     return Res;
 }
 
+enum { PlatformError_Fatal, PlatformError_Warning };
+
 internal void Win32ErrorMessage(HWND Window, int Type, const char * Message)
 {
     char *Caption = "Application error";
@@ -407,12 +425,6 @@ internal void Win32ErrorMessage(HWND Window, int Type, const char * Message)
 }
 
 #define ExitWithError(msg) Win32ErrorMessage(App.Window, PlatformError_Fatal, msg)
-
-struct win32_read_file_result
-{
-    u8* Bytes;
-    u32 ByteCount;
-};
 
 internal void Win32DebugFreeMemory(u8* Bytes)
 {
@@ -459,12 +471,6 @@ internal win32_read_file_result Win32DebugReadFile(const char *FilePath)
 
 // Vulkan stuff ///////////////////////////////////////////////////////////////////////////////
 
-struct vulkan_create_buffer_result
-{
-    VkBuffer       Buffer;
-    VkDeviceMemory Memory;
-};
-
 internal uint32_t VulkanFindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties)
 {
     VkPhysicalDeviceMemoryProperties MemProperties;
@@ -482,7 +488,7 @@ internal uint32_t VulkanFindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlag
     return 0;
 }
 
-internal vulkan_create_buffer_result VulkanCreateBuffer(HWND Window, VkDeviceSize Size, VkBufferUsageFlags Usage, VkMemoryPropertyFlags Properties)
+internal vulkan_create_buffer_result VulkanCreateBuffer(VkDeviceSize Size, VkBufferUsageFlags Usage, VkMemoryPropertyFlags Properties)
 {
     vulkan_create_buffer_result Res = {};
     
@@ -679,7 +685,7 @@ internal VkImageView VulkanCreateImageView(VkImage Image, VkFormat Format)
     return ImageView;
 }
 
-internal void VulkanCreateSwapchain(HWND Window)
+internal void VulkanCreateSwapchain()
 {
     // Vulkan: Swap chain
     {
@@ -731,10 +737,10 @@ internal void VulkanCreateSwapchain(HWND Window)
         else
         {
             // NOTE(jdiaz): Win32 code
-            i32 Width = DEFAULT_WINDOW_WIDTH;
+            i32 Width  = DEFAULT_WINDOW_WIDTH;
             i32 Height = DEFAULT_WINDOW_HEIGHT;
             RECT WindowRect = {};
-            if (GetClientRect(Window, &WindowRect)) {
+            if (GetClientRect(App.Window, &WindowRect)) {
                 Width = WindowRect.right - WindowRect.left;
                 Height = WindowRect.bottom - WindowRect.top;
             }
@@ -1065,7 +1071,7 @@ internal void VulkanCreateSwapchain(HWND Window)
         for (u32 i = 0; i < VulkanSwapchainImageCount; ++i)
         {
             vulkan_create_buffer_result Uniform = 
-                VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VulkanCreateBuffer(BufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             VulkanUniformBuffers[i] = Uniform.Buffer;
             VulkanUniformBuffersMemory[i] = Uniform.Memory;
         }
@@ -1239,7 +1245,7 @@ internal void VulkanCleanupSwapchain()
     vkDestroyDescriptorPool(VulkanDevice, VulkanDescriptorPool, NULL);
 }
 
-internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_data *Data, i32 Width, i32 Height)
+internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
 {
     const char* RequiredInstanceExtensions[] = {"VK_KHR_win32_surface", "VK_KHR_surface"};
     const char* RequiredDeviceExtensions[]   = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
@@ -1325,8 +1331,8 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
     {
         VkWin32SurfaceCreateInfoKHR SurfaceCreateInfo = {};
         SurfaceCreateInfo.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        SurfaceCreateInfo.hwnd      = Window;
-        SurfaceCreateInfo.hinstance = hInstance;
+        SurfaceCreateInfo.hwnd      = App.Window;
+        SurfaceCreateInfo.hinstance = App.Instance;
         
         if (vkCreateWin32SurfaceKHR(VulkanInstance, &SurfaceCreateInfo, NULL, &VulkanSurface) != VK_SUCCESS) {
             ExitWithError("Failed to create a Vulkan surface");
@@ -1515,7 +1521,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         // staging buffer
         VkDeviceSize ImageSize = TexWidth * TexHeight * 4;
         vulkan_create_buffer_result Staging = 
-            VulkanCreateBuffer(Window, ImageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VulkanCreateBuffer(ImageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
         void* Data;
         vkMapMemory(VulkanDevice, Staging.Memory, 0, ImageSize, 0, &Data);
@@ -1606,7 +1612,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         
         // temporary staging buffer
         vulkan_create_buffer_result Staging =
-            VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VulkanCreateBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
         // copy vertices into memory
         void *Data;
@@ -1615,7 +1621,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         vkUnmapMemory(VulkanDevice, Staging.Memory);
         
         vulkan_create_buffer_result Vertex =
-            VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VulkanCreateBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         VulkanVertexBuffer       = Vertex.Buffer;
         VulkanVertexBufferMemory = Vertex.Memory;
         
@@ -1631,7 +1637,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         
         // temporary staging buffer
         vulkan_create_buffer_result Staging =
-            VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            VulkanCreateBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         
         // copy indices into memory
         void *Data;
@@ -1640,7 +1646,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         vkUnmapMemory(VulkanDevice, Staging.Memory);
         
         vulkan_create_buffer_result Index =
-            VulkanCreateBuffer(Window, BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            VulkanCreateBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         VulkanIndexBuffer       = Index.Buffer;
         VulkanIndexBufferMemory = Index.Memory;
         
@@ -1678,7 +1684,7 @@ internal void VulkanInit(HINSTANCE hInstance, HWND Window, arena& Arena, app_dat
         }
     }
     
-    VulkanCreateSwapchain(Window);
+    VulkanCreateSwapchain();
     
     // Vulkan: Semaphore creation
     {
@@ -1865,12 +1871,19 @@ int WinMain(
                                    NULL
                                    );
     
-    App.Resize  = false;
-    App.Running = true;
-    App.Window  = Window;
+    App.Resize   = false;
+    App.Running  = true;
+    App.Window   = Window;
+    App.Instance = hInstance;
     
     if ( Window )
     {
+        // System info
+        SYSTEM_INFO SystemInfo;
+        GetSystemInfo(&SystemInfo);
+        DWORD PageSize              = SystemInfo.dwPageSize;
+        DWORD AllocationGranularity = SystemInfo.dwAllocationGranularity; // much larger
+        
         // Memory initialization
         
         u32 MemorySize   = MB(512);
@@ -1878,14 +1891,14 @@ int WinMain(
         Assert(MemoryBuffer);
         arena Arena      = MakeArena(MemoryBuffer, MemorySize);
         
-        GlobalScratchMemory.Size = GB(2);
-        GlobalScratchMemory.Head = 0;
-        GlobalScratchMemory.Buffer = (u8*)VirtualAlloc(NULL, GlobalScratchMemory.Size, MEM_RESERVE, PAGE_READWRITE);
-        Assert(GlobalScratchMemory.Buffer);
+        App.ScratchMemory.Size = GB(2);
+        App.ScratchMemory.Head = 0;
+        App.ScratchMemory.Buffer = (u8*)VirtualAlloc(NULL, App.ScratchMemory.Size, MEM_RESERVE, PAGE_READWRITE);
+        Assert(App.ScratchMemory.Buffer);
         
         app_data* Data = PushStruct(&Arena, app_data);
         
-        VulkanInit(hInstance, Window, Arena, Data, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
+        VulkanInit(Arena, Data, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
         
         // Application loop
         u32 CurrentFrame = 0;
@@ -1925,7 +1938,7 @@ int WinMain(
                 {
                     vkDeviceWaitIdle(VulkanDevice);
                     VulkanCleanupSwapchain();
-                    VulkanCreateSwapchain(Window);
+                    VulkanCreateSwapchain();
                 }
                 else if (Res != VK_SUCCESS && Res != VK_SUBOPTIMAL_KHR)
                 {
@@ -1994,21 +2007,18 @@ int WinMain(
                     App.Resize = false;
                     vkDeviceWaitIdle(VulkanDevice);
                     VulkanCleanupSwapchain();
-                    VulkanCreateSwapchain(Window);
+                    VulkanCreateSwapchain();
                 }
                 else if (Res != VK_SUCCESS)
                 {
                     ExitWithError("Failed to present swapchain image");
                 }
                 
-                // NOTE(jdiaz): Not needed because we are using fences
-                //vkQueueWaitIdle(VulkanPresentQueue);
-                
                 CurrentFrame = (CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
             }
             
             // Reset scratch memory
-            GlobalScratchMemory.Head = 0;
+            App.ScratchMemory.Head = 0;
         }
         
         VulkanCleanup();
