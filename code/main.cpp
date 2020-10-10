@@ -129,49 +129,53 @@ struct vulkan_create_image_result
 // Globals ////////////////////////////////////////////////////////////////////////////////////////
 
 // Vulkan stuff
-VkInstance       VulkanInstance;
-VkSurfaceKHR     VulkanSurface;
-VkPhysicalDevice VulkanPhysicalDevice;
-VkDevice         VulkanDevice;
-uint32_t         VulkanGraphicsQueueFamily;
-uint32_t         VulkanPresentQueueFamily;
-VkQueue          VulkanGraphicsQueue;
-VkQueue          VulkanPresentQueue;
-VkSwapchainKHR   VulkanSwapchain;
-VkExtent2D       VulkanSwapchainExtent;
-VkFormat         VulkanSwapchainImageFormat;
-uint32_t         VulkanSwapchainImageCount;
-VkImage          VulkanSwapchainImages[MAX_SWAPCHAIN_IMAGES];
-VkImageView      VulkanSwapchainImageViews[MAX_SWAPCHAIN_IMAGES];
-VkImage          VulkanDepthImage;
-VkDeviceMemory   VulkanDepthImageMemory;
-VkImageView      VulkanDepthImageView;
-VkFormat         VulkanDepthFormat;
-b32              VulkanDepthHasStencil;
-VkRenderPass     VulkanRenderPass;
+VkInstance            VulkanInstance;
+VkSurfaceKHR          VulkanSurface;
+VkPhysicalDevice      VulkanPhysicalDevice;
+VkDevice              VulkanDevice;
+uint32_t              VulkanGraphicsQueueFamily;
+uint32_t              VulkanPresentQueueFamily;
+VkQueue               VulkanGraphicsQueue;
+VkQueue               VulkanPresentQueue;
+VkSwapchainKHR        VulkanSwapchain;
+VkExtent2D            VulkanSwapchainExtent;
+VkFormat              VulkanSwapchainImageFormat;
+uint32_t              VulkanSwapchainImageCount;
+VkImage               VulkanSwapchainImages[MAX_SWAPCHAIN_IMAGES];
+VkImageView           VulkanSwapchainImageViews[MAX_SWAPCHAIN_IMAGES];
+VkImage               VulkanColorImage;
+VkDeviceMemory        VulkanColorImageMemory;
+VkImageView           VulkanColorImageView;
+VkImage               VulkanDepthImage;
+VkDeviceMemory        VulkanDepthImageMemory;
+VkImageView           VulkanDepthImageView;
+VkFormat              VulkanDepthFormat;
+b32                   VulkanDepthHasStencil;
+VkRenderPass          VulkanRenderPass;
 VkDescriptorSetLayout VulkanDescriptorSetLayout;
-VkPipelineLayout VulkanPipelineLayout;
-VkPipeline       VulkanGraphicsPipeline;
-VkFramebuffer    VulkanSwapchainFramebuffers[MAX_SWAPCHAIN_IMAGES];
-VkCommandPool    VulkanCommandPool;
-VkCommandBuffer  VulkanCommandBuffers[MAX_SWAPCHAIN_IMAGES];
-VkSemaphore      VulkanImageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT];
-VkSemaphore      VulkanRenderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
-VkFence          VulkanInFlightFences[MAX_FRAMES_IN_FLIGHT];
-VkFence          VulkanInFlightImages[MAX_SWAPCHAIN_IMAGES];
-VkBuffer         VulkanVertexBuffer;
-VkDeviceMemory   VulkanVertexBufferMemory;
-VkBuffer         VulkanIndexBuffer;
-VkDeviceMemory   VulkanIndexBufferMemory;
-VkBuffer         VulkanUniformBuffers[MAX_SWAPCHAIN_IMAGES];
-VkDeviceMemory   VulkanUniformBuffersMemory[MAX_SWAPCHAIN_IMAGES];
-VkDescriptorPool VulkanDescriptorPool;
-VkDescriptorSet  VulkanDescriptorSets[MAX_SWAPCHAIN_IMAGES];
-VkImage          VulkanTextureImage;
-VkDeviceMemory   VulkanTextureImageMemory;
-VkImageView      VulkanTextureImageView;
-VkSampler        VulkanTextureSampler;
-uint32_t         VulkanMipLevels;
+VkPipelineLayout      VulkanPipelineLayout;
+VkPipeline            VulkanGraphicsPipeline;
+VkFramebuffer         VulkanSwapchainFramebuffers[MAX_SWAPCHAIN_IMAGES];
+VkCommandPool         VulkanCommandPool;
+VkCommandBuffer       VulkanCommandBuffers[MAX_SWAPCHAIN_IMAGES];
+VkSemaphore           VulkanImageAvailableSemaphore[MAX_FRAMES_IN_FLIGHT];
+VkSemaphore           VulkanRenderFinishedSemaphore[MAX_FRAMES_IN_FLIGHT];
+VkFence               VulkanInFlightFences[MAX_FRAMES_IN_FLIGHT];
+VkFence               VulkanInFlightImages[MAX_SWAPCHAIN_IMAGES];
+VkBuffer              VulkanVertexBuffer;
+VkDeviceMemory        VulkanVertexBufferMemory;
+VkBuffer              VulkanIndexBuffer;
+VkDeviceMemory        VulkanIndexBufferMemory;
+VkBuffer              VulkanUniformBuffers[MAX_SWAPCHAIN_IMAGES];
+VkDeviceMemory        VulkanUniformBuffersMemory[MAX_SWAPCHAIN_IMAGES];
+VkDescriptorPool      VulkanDescriptorPool;
+VkDescriptorSet       VulkanDescriptorSets[MAX_SWAPCHAIN_IMAGES];
+VkImage               VulkanTextureImage;
+VkDeviceMemory        VulkanTextureImageMemory;
+VkImageView           VulkanTextureImageView;
+VkSampler             VulkanTextureSampler;
+uint32_t              VulkanMipLevels;
+VkSampleCountFlagBits VulkanMSAASampleCount;
 
 internal application App;
 
@@ -791,7 +795,7 @@ internal VkShaderModule VulkanCreateShaderModule(VkDevice Device, const u8* Byte
     return ShaderModule;
 }
 
-internal vulkan_create_image_result VulkanCreateImage(u32 Width, u32 Height, u32 MipLevelCount, VkFormat Format, VkImageTiling Tiling, VkImageUsageFlags UsageFlags, VkMemoryPropertyFlags MemoryFlags)
+internal vulkan_create_image_result VulkanCreateImage(u32 Width, u32 Height, u32 MipLevelCount, VkSampleCountFlagBits SampleCount, VkFormat Format, VkImageTiling Tiling, VkImageUsageFlags UsageFlags, VkMemoryPropertyFlags MemoryFlags)
 {
     // create image
     VkImageCreateInfo ImageCreateInfo = {};
@@ -807,7 +811,7 @@ internal vulkan_create_image_result VulkanCreateImage(u32 Width, u32 Height, u32
     ImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ImageCreateInfo.usage         = UsageFlags;
     ImageCreateInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-    ImageCreateInfo.samples       = VK_SAMPLE_COUNT_1_BIT; // only for multisampled attachments
+    ImageCreateInfo.samples       = SampleCount; // only for multisampled attachments
     ImageCreateInfo.flags         = 0;
     
     vulkan_create_image_result Res;
@@ -980,13 +984,13 @@ internal void VulkanCreateSwapchain()
         
         VkAttachmentDescription ColorAttachment = {};
         ColorAttachment.format         = VulkanSwapchainImageFormat;
-        ColorAttachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        ColorAttachment.samples        = VulkanMSAASampleCount;
         ColorAttachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
         ColorAttachment.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
         ColorAttachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         ColorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         ColorAttachment.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-        ColorAttachment.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        ColorAttachment.finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         
         VkAttachmentReference ColorAttachmentRef = {};
         ColorAttachmentRef.attachment = 0; // index in the pAttachments render pass global array
@@ -994,7 +998,7 @@ internal void VulkanCreateSwapchain()
         
         VkAttachmentDescription DepthAttachment = {};
         DepthAttachment.format         = VulkanDepthFormat;
-        DepthAttachment.samples        = VK_SAMPLE_COUNT_1_BIT;
+        DepthAttachment.samples        = VulkanMSAASampleCount;
         DepthAttachment.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
         DepthAttachment.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE; // because we won't use it after render
         DepthAttachment.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1006,10 +1010,25 @@ internal void VulkanCreateSwapchain()
         DepthAttachmentRef.attachment = 1; // index in the pAttachments render pass global array
         DepthAttachmentRef.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         
+        VkAttachmentDescription ColorAttachmentResolve = {};
+        ColorAttachmentResolve.format         = VulkanSwapchainImageFormat;
+        ColorAttachmentResolve.samples        = VK_SAMPLE_COUNT_1_BIT;
+        ColorAttachmentResolve.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        ColorAttachmentResolve.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        ColorAttachmentResolve.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        ColorAttachmentResolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        ColorAttachmentResolve.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        ColorAttachmentResolve.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        
+        VkAttachmentReference ColorAttachmentResolveRef = {};
+        ColorAttachmentResolveRef.attachment = 2; // index in the pAttachments render pass global array
+        ColorAttachmentResolveRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        
         VkSubpassDescription Subpass    = {};
         Subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
         Subpass.colorAttachmentCount    = 1;
         Subpass.pColorAttachments       = &ColorAttachmentRef; // position in this array is the attachment location in the shader
+        Subpass.pResolveAttachments     = &ColorAttachmentResolveRef;
         Subpass.pDepthStencilAttachment = &DepthAttachmentRef;
         
         // NOTE(jdiaz): Didn't understand these flags very well...
@@ -1021,7 +1040,7 @@ internal void VulkanCreateSwapchain()
         SubpassDependency.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         SubpassDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         
-        VkAttachmentDescription Attachments[] = {ColorAttachment, DepthAttachment};
+        VkAttachmentDescription Attachments[] = {ColorAttachment, DepthAttachment, ColorAttachmentResolve};
         
         VkRenderPassCreateInfo RenderPassCreateInfo = {};
         RenderPassCreateInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -1141,9 +1160,9 @@ internal void VulkanCreateSwapchain()
         
         VkPipelineMultisampleStateCreateInfo MultisampleCreateInfo = {};
         MultisampleCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        MultisampleCreateInfo.sampleShadingEnable   = VK_FALSE;
-        MultisampleCreateInfo.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT;
-        MultisampleCreateInfo.minSampleShading      = 1.0f;
+        MultisampleCreateInfo.sampleShadingEnable   = VK_FALSE; // VK_TRUE also applies MSAA to shading (if supported)
+        MultisampleCreateInfo.rasterizationSamples  = VulkanMSAASampleCount;
+        MultisampleCreateInfo.minSampleShading      = 1.0f;     // If sampleShadingEnabled, close to 1.0 means smoother
         MultisampleCreateInfo.pSampleMask           = NULL;
         MultisampleCreateInfo.alphaToCoverageEnable = VK_FALSE;
         MultisampleCreateInfo.alphaToOneEnable      = VK_FALSE;
@@ -1245,11 +1264,29 @@ internal void VulkanCreateSwapchain()
         vkDestroyShaderModule(VulkanDevice, VertexShaderModule, NULL);
     }
     
+    // Vulkan: Color buffer
+    {
+        VkFormat ColorFormat = VulkanSwapchainImageFormat;
+        
+        vulkan_create_image_result Color = VulkanCreateImage(VulkanSwapchainExtent.width,
+                                                             VulkanSwapchainExtent.height,
+                                                             1,
+                                                             VulkanMSAASampleCount,
+                                                             ColorFormat,
+                                                             VK_IMAGE_TILING_OPTIMAL,
+                                                             VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VulkanColorImage       = Color.Image;
+        VulkanColorImageMemory = Color.Memory;
+        VulkanColorImageView   = VulkanCreateImageView(VulkanColorImage, ColorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+    }
+    
     // Vulkan: Depth buffer
     {
         vulkan_create_image_result Depth = VulkanCreateImage(VulkanSwapchainExtent.width,
                                                              VulkanSwapchainExtent.height,
                                                              1,
+                                                             VulkanMSAASampleCount,
                                                              VulkanDepthFormat,
                                                              VK_IMAGE_TILING_OPTIMAL,
                                                              VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1263,7 +1300,7 @@ internal void VulkanCreateSwapchain()
     {
         for (u32 i = 0; i < VulkanSwapchainImageCount; ++i)
         {
-            VkImageView Attachments[] = { VulkanSwapchainImageViews[i], VulkanDepthImageView };
+            VkImageView Attachments[] = { VulkanColorImageView, VulkanDepthImageView, VulkanSwapchainImageViews[i] };
             
             VkFramebufferCreateInfo FramebufferCreateInfo = {};
             FramebufferCreateInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -1436,6 +1473,10 @@ internal void VulkanCleanupSwapchain()
     vkDestroyImageView(VulkanDevice, VulkanDepthImageView, NULL);
     vkDestroyImage(VulkanDevice, VulkanDepthImage, NULL);
     vkFreeMemory(VulkanDevice, VulkanDepthImageMemory, NULL);
+    
+    vkDestroyImageView(VulkanDevice, VulkanColorImageView, NULL);
+    vkDestroyImage(VulkanDevice, VulkanColorImage, NULL);
+    vkFreeMemory(VulkanDevice, VulkanColorImageMemory, NULL);
     
     u32 Count = VulkanSwapchainImageCount;
     
@@ -1650,6 +1691,16 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             
             Score += DeviceProperties.limits.maxImageDimension2D;
             
+            VkSampleCountFlagBits SampleCountFlag;
+            VkSampleCountFlags    SampleCountFlags = DeviceProperties.limits.framebufferColorSampleCounts & DeviceProperties.limits.framebufferDepthSampleCounts;
+            if      (SampleCountFlags & VK_SAMPLE_COUNT_64_BIT) SampleCountFlag = VK_SAMPLE_COUNT_64_BIT;
+            else if (SampleCountFlags & VK_SAMPLE_COUNT_32_BIT) SampleCountFlag = VK_SAMPLE_COUNT_32_BIT;
+            else if (SampleCountFlags & VK_SAMPLE_COUNT_16_BIT) SampleCountFlag = VK_SAMPLE_COUNT_16_BIT;
+            else if (SampleCountFlags & VK_SAMPLE_COUNT_8_BIT)  SampleCountFlag = VK_SAMPLE_COUNT_8_BIT;
+            else if (SampleCountFlags & VK_SAMPLE_COUNT_4_BIT)  SampleCountFlag = VK_SAMPLE_COUNT_4_BIT;
+            else if (SampleCountFlags & VK_SAMPLE_COUNT_2_BIT)  SampleCountFlag = VK_SAMPLE_COUNT_2_BIT;
+            else                                                SampleCountFlag = VK_SAMPLE_COUNT_1_BIT;
+            
             
             // Check device features
             
@@ -1667,6 +1718,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
                 VulkanPhysicalDevice      = PhysicalDevices[ i ];
                 VulkanGraphicsQueueFamily = GraphicsQueueIdx;
                 VulkanPresentQueueFamily  = PresentQueueIdx;
+                VulkanMSAASampleCount     = SampleCountFlag;
             }
         }
         
@@ -1723,6 +1775,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         
         VkPhysicalDeviceFeatures DeviceFeatures = {};
         DeviceFeatures.samplerAnisotropy = VK_TRUE;
+        //DeviceFeatures.sampleRateShading = VK_TRUE; // MSAA also applied to shading (more costly)
         // TODO(jdiaz): Fill this structure when we know the features we need
         
         VkDeviceCreateInfo DeviceCreateInfo = {};
@@ -1785,6 +1838,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         stbi_image_free(Pixels);
         
         vulkan_create_image_result Res = VulkanCreateImage(TexWidth, TexHeight, VulkanMipLevels,
+                                                           VK_SAMPLE_COUNT_1_BIT,
                                                            VK_FORMAT_R8G8B8A8_SRGB,
                                                            VK_IMAGE_TILING_OPTIMAL,
                                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
