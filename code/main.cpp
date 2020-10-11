@@ -87,17 +87,6 @@ struct scratch_memory
     u8* Buffer;
 };
 
-struct app_data
-{
-    // Vulkan info
-    uint32_t                  VkExtensionPropertyCount;
-    VkExtensionProperties*    VkExtensionProperties;
-    uint32_t                  VkLayerPropertyCount;
-    VkLayerProperties*        VkLayerProperties;
-    VkPhysicalDevice          VkPhysicalDevice;
-    // TODO(jdiaz): Other queue indices go here
-};
-
 struct application
 {
     HWND           Window;
@@ -1507,43 +1496,65 @@ internal void VulkanCleanupSwapchain()
     vkDestroyDescriptorPool(VulkanDevice, VulkanDescriptorPool, NULL);
 }
 
-internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
+internal void VulkanInit(i32 Width, i32 Height)
 {
-    const char* RequiredInstanceExtensions[] = {"VK_KHR_win32_surface", "VK_KHR_surface"};
+#define USE_VALIDATION_LAYERS
+    
+    scratch_block Scratch;
+    arena*        Arena = &Scratch.Arena;
+    
+    const char* RequiredInstanceExtensions[] = { "VK_KHR_win32_surface", "VK_KHR_surface" };
     const char* RequiredDeviceExtensions[]   = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+#if defined(USE_VALIDATION_LAYERS)
+    const char* RequiredValidationLayers[]   = { "VK_LAYER_KHRONOS_validation" };
+#endif
     
     VkResult Res;
     
     // Vulkan: Retrieving all instance extensions
     {
-        vkEnumerateInstanceExtensionProperties(NULL, &Data->VkExtensionPropertyCount, NULL);
-        Data->VkExtensionProperties = PushArray(&Arena, VkExtensionProperties, Data->VkExtensionPropertyCount);
-        LOG("Extension count: %u", Data->VkExtensionPropertyCount);
-        vkEnumerateInstanceExtensionProperties(NULL, &Data->VkExtensionPropertyCount, Data->VkExtensionProperties);
+        uint32_t InstanceExtensionCount;
+        vkEnumerateInstanceExtensionProperties(NULL, &InstanceExtensionCount, NULL);
+        LOG("Extension count: %u", InstanceExtensionCount);
         
-        for (u32 i = 0; i < Data->VkExtensionPropertyCount; ++i)
+        VkExtensionProperties* InstanceExtensions = PushArray(Arena, VkExtensionProperties, InstanceExtensionCount);
+        vkEnumerateInstanceExtensionProperties(NULL, &InstanceExtensionCount, InstanceExtensions);
+        
+        for (u32 i = 0; i < ArrayCount(RequiredInstanceExtensions); ++i)
         {
-            LOG("\t %s", Data->VkExtensionProperties[ i ].extensionName);
+            b32 ExtensionFound = false;
+            
+            for (u32 j = 0; j < InstanceExtensionCount && !ExtensionFound; ++j)
+            {
+                if (StringsAreEqual(RequiredInstanceExtensions[ i ], InstanceExtensions[ j ].extensionName))
+                {
+                    ExtensionFound = true;
+                    break;
+                }
+            }
+            
+            if (!ExtensionFound)
+            {
+                ExitWithError("Could not find the instance extension");
+            }
         }
     }
-    
-    const char* ValidationLayers[] = { "VK_LAYER_KHRONOS_validation" };
-#define USE_VALIDATION_LAYERS
     
 #if defined(USE_VALIDATION_LAYERS)
     // Vulkan: Check validation layers
     {
-        vkEnumerateInstanceLayerProperties(&Data->VkLayerPropertyCount, NULL);
-        Data->VkLayerProperties = PushArray(&Arena, VkLayerProperties, Data->VkLayerPropertyCount);
-        vkEnumerateInstanceLayerProperties(&Data->VkLayerPropertyCount, Data->VkLayerProperties);
+        uint32_t InstanceLayerCount;
+        vkEnumerateInstanceLayerProperties(&InstanceLayerCount, NULL);
+        VkLayerProperties* InstanceLayers = PushArray(Arena, VkLayerProperties, InstanceLayerCount);
+        vkEnumerateInstanceLayerProperties(&InstanceLayerCount, InstanceLayers);
         
-        for (u32 i = 0; i < ArrayCount(ValidationLayers); ++i)
+        for (u32 i = 0; i < ArrayCount(RequiredValidationLayers); ++i)
         {
             b32 LayerFound = false;
             
-            for (u32 j = 0; j < Data->VkLayerPropertyCount; ++j)
+            for (u32 j = 0; j < InstanceLayerCount; ++j)
             {
-                if (StringsAreEqual(ValidationLayers[ i ], Data->VkLayerProperties[ j ].layerName))
+                if (StringsAreEqual(RequiredValidationLayers[ i ], InstanceLayers[ j ].layerName))
                 {
                     LayerFound = true;
                     break;
@@ -1574,8 +1585,8 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         CreateInfo.enabledExtensionCount   = ArrayCount(RequiredInstanceExtensions);
         CreateInfo.ppEnabledExtensionNames = RequiredInstanceExtensions;
 #if defined(USE_VALIDATION_LAYERS)
-        CreateInfo.enabledLayerCount       = ArrayCount(ValidationLayers);
-        CreateInfo.ppEnabledLayerNames     = ValidationLayers;
+        CreateInfo.enabledLayerCount       = ArrayCount(RequiredValidationLayers);
+        CreateInfo.ppEnabledLayerNames     = RequiredValidationLayers;
 #else
         CreateInfo.enabledLayerCount       = 0;
 #endif
@@ -1615,10 +1626,10 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             
             // Check queues support
             
-            uint32_t PhysicalDeviceQueueFamilyCount = 8;
-            VkQueueFamilyProperties PhysicalDeviceQueueFamilies[ 8 ];
+            uint32_t PhysicalDeviceQueueFamilyCount = 16;
+            VkQueueFamilyProperties PhysicalDeviceQueueFamilies[ 16 ];
             vkGetPhysicalDeviceQueueFamilyProperties(CurrPhysicalDevice, &PhysicalDeviceQueueFamilyCount, PhysicalDeviceQueueFamilies);
-            Assert(PhysicalDeviceQueueFamilyCount < 8); // 8 is more than enough, this "less than" is not an error
+            Assert(PhysicalDeviceQueueFamilyCount < 16); // 16 is more than enough, this "less than" is not an error
             
             u32 GraphicsQueueIdx = INVALID_INDEX;
             u32 PresentQueueIdx  = INVALID_INDEX;
@@ -1790,8 +1801,8 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         DeviceCreateInfo.enabledExtensionCount   = ArrayCount(RequiredDeviceExtensions);
         DeviceCreateInfo.ppEnabledExtensionNames = RequiredDeviceExtensions;
 #if defined(USE_VALIDATION_LAYERS)
-        DeviceCreateInfo.enabledLayerCount       = ArrayCount(ValidationLayers);
-        DeviceCreateInfo.ppEnabledLayerNames     = ValidationLayers;
+        DeviceCreateInfo.enabledLayerCount       = ArrayCount(RequiredValidationLayers); // Deprecated
+        DeviceCreateInfo.ppEnabledLayerNames     = RequiredValidationLayers;             // Deprecated
 #else
         DeviceCreateInfo.enabledLayerCount       = 0;
 #endif
@@ -2183,9 +2194,7 @@ int WinMain(
         App.ScratchMemory.Buffer = (u8*)VirtualAlloc(NULL, App.ScratchMemory.Size, MEM_RESERVE, PAGE_READWRITE);
         Assert(App.ScratchMemory.Buffer);
         
-        app_data* Data = PushStruct(&Arena, app_data);
-        
-        VulkanInit(Arena, Data, DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
+        VulkanInit(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
         
         // Application loop
         u32 CurrentFrame = 0;
