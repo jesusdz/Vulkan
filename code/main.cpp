@@ -1611,11 +1611,13 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         u32 BestScore = 0;
         for (u32 i = 0; i < PhysicalDeviceCount; ++i)
         {
+            VkPhysicalDevice CurrPhysicalDevice = PhysicalDevices[ i ];
+            
             // Check queues support
             
             uint32_t PhysicalDeviceQueueFamilyCount = 8;
             VkQueueFamilyProperties PhysicalDeviceQueueFamilies[ 8 ];
-            vkGetPhysicalDeviceQueueFamilyProperties(PhysicalDevices[ i ], &PhysicalDeviceQueueFamilyCount, PhysicalDeviceQueueFamilies);
+            vkGetPhysicalDeviceQueueFamilyProperties(CurrPhysicalDevice, &PhysicalDeviceQueueFamilyCount, PhysicalDeviceQueueFamilies);
             Assert(PhysicalDeviceQueueFamilyCount < 8); // 8 is more than enough, this "less than" is not an error
             
             u32 GraphicsQueueIdx = INVALID_INDEX;
@@ -1626,7 +1628,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
                     GraphicsQueueIdx = j;
                 
                 VkBool32 PresentSupport = false;
-                vkGetPhysicalDeviceSurfaceSupportKHR( PhysicalDevices[ i ], j, VulkanSurface, &PresentSupport);
+                vkGetPhysicalDeviceSurfaceSupportKHR(CurrPhysicalDevice, j, VulkanSurface, &PresentSupport);
                 if (PresentSupport)
                     PresentQueueIdx = j;
             }
@@ -1639,8 +1641,8 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             
             uint32_t DeviceExtensionsCount = 256;
             VkExtensionProperties DeviceExtensions[ 256 ];
-            vkEnumerateDeviceExtensionProperties( PhysicalDevices[ i ], NULL, &DeviceExtensionsCount, NULL);
-            Res = vkEnumerateDeviceExtensionProperties( PhysicalDevices[ i ], NULL, &DeviceExtensionsCount, DeviceExtensions);
+            vkEnumerateDeviceExtensionProperties(CurrPhysicalDevice, NULL, &DeviceExtensionsCount, NULL);
+            Res = vkEnumerateDeviceExtensionProperties(CurrPhysicalDevice, NULL, &DeviceExtensionsCount, DeviceExtensions);
             Assert(Res == VK_SUCCESS);
             
             b32 AllRequiredExtensionsFound = true;
@@ -1669,14 +1671,45 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             // Check swapchain support
             
             uint32_t FormatCount;
-            vkGetPhysicalDeviceSurfaceFormatsKHR(PhysicalDevices[ i ], VulkanSurface, &FormatCount, NULL);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(CurrPhysicalDevice, VulkanSurface, &FormatCount, NULL);
             
             uint32_t PresentModesCount;
-            vkGetPhysicalDeviceSurfacePresentModesKHR(PhysicalDevices[ i ], VulkanSurface, &PresentModesCount, NULL);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(CurrPhysicalDevice, VulkanSurface, &PresentModesCount, NULL);
             
             b32 IsValidSwapChain = FormatCount != 0 && PresentModesCount != 0;
             if (!IsValidSwapChain)
                 continue;
+            
+            // Check depth buffer availability
+            
+            VkImageTiling        Tiling         = VK_IMAGE_TILING_OPTIMAL; // or LINEAR
+            VkFormatFeatureFlags Features       = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            VkFormat             DepthFormats[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
+            
+            b32 AvailableDepthFormatFound = false;
+            VkFormat DepthFormat;
+            for (u32 j = 0; j < ArrayCount(DepthFormats); ++j)
+            {
+                VkFormatProperties Props;
+                vkGetPhysicalDeviceFormatProperties(CurrPhysicalDevice, DepthFormats[j], &Props);
+                
+                if (Tiling == VK_IMAGE_TILING_LINEAR && (Props.linearTilingFeatures & Features) == Features)
+                {
+                    DepthFormat = DepthFormats[j];
+                    AvailableDepthFormatFound = true;
+                }
+                else if (Tiling == VK_IMAGE_TILING_OPTIMAL && (Props.optimalTilingFeatures & Features) == Features)
+                {
+                    DepthFormat = DepthFormats[j];
+                    AvailableDepthFormatFound = true;
+                }
+            }
+            
+            if (!AvailableDepthFormatFound)
+                continue;
+            
+            b32 DepthHasStencil = (DepthFormat == VK_FORMAT_D24_UNORM_S8_UINT || DepthFormat == VK_FORMAT_D32_SFLOAT_S8_UINT);
+            
             
             
             // Check device properties
@@ -1684,7 +1717,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             u32 Score = 0;
             
             VkPhysicalDeviceProperties DeviceProperties;
-            vkGetPhysicalDeviceProperties( PhysicalDevices[ i ], &DeviceProperties);
+            vkGetPhysicalDeviceProperties(CurrPhysicalDevice, &DeviceProperties);
             
             if (DeviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
                 Score += 1000;
@@ -1705,7 +1738,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             // Check device features
             
             VkPhysicalDeviceFeatures DeviceFeatures;
-            vkGetPhysicalDeviceFeatures( PhysicalDevices[ i ], &DeviceFeatures);
+            vkGetPhysicalDeviceFeatures(CurrPhysicalDevice, &DeviceFeatures);
             
             if (!DeviceFeatures.geometryShader)    Score = 0;
             if (!DeviceFeatures.samplerAnisotropy) Score = 0;
@@ -1715,47 +1748,18 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             if (Score > BestScore)
             {
                 BestScore = Score;
-                VulkanPhysicalDevice      = PhysicalDevices[ i ];
+                VulkanPhysicalDevice      = CurrPhysicalDevice;
                 VulkanGraphicsQueueFamily = GraphicsQueueIdx;
                 VulkanPresentQueueFamily  = PresentQueueIdx;
                 VulkanMSAASampleCount     = SampleCountFlag;
+                VulkanDepthFormat         = DepthFormat;
+                VulkanDepthHasStencil     = DepthHasStencil;
             }
         }
         
         if (BestScore == 0) {
             ExitWithError("Failed to find a proper Vulkan physical device");
         }
-    }
-    
-    // Vulkan: Depth buffer availability
-    {
-        VkImageTiling        Tiling         = VK_IMAGE_TILING_OPTIMAL; // or LINEAR
-        VkFormatFeatureFlags Features       = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        VkFormat             DepthFormats[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
-        
-        b32 Found = false;
-        VkFormat Format;
-        for (u32 i = 0; i < ArrayCount(DepthFormats); ++i)
-        {
-            VkFormatProperties Props;
-            vkGetPhysicalDeviceFormatProperties(VulkanPhysicalDevice, DepthFormats[i], &Props);
-            
-            if (Tiling == VK_IMAGE_TILING_LINEAR && (Props.linearTilingFeatures & Features) == Features)
-            {
-                Format = DepthFormats[i];
-                Found = true;
-            }
-            else if (Tiling == VK_IMAGE_TILING_OPTIMAL && (Props.optimalTilingFeatures & Features) == Features)
-            {
-                Format = DepthFormats[i];
-                Found = true;
-            }
-        }
-        
-        if (!Found) ExitWithError("Failed to find supported depth format");
-        
-        VulkanDepthFormat = Format;
-        VulkanDepthHasStencil = (Format == VK_FORMAT_D24_UNORM_S8_UINT || Format == VK_FORMAT_D32_SFLOAT_S8_UINT);
     }
     
     // Vulkan: Logical device
@@ -1814,7 +1818,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         }
     }
     
-    // Vulkan: Texture image / texture image view
+    // Vulkan: Texture image
     {
         // read image
         int TexWidth, TexHeight, TexChannels;
@@ -1849,7 +1853,7 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         VulkanTransitionImageLayout(VulkanTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VulkanMipLevels);
         VulkanCopyBufferToImage(Staging.Buffer, VulkanTextureImage, TexWidth, TexHeight);
         
-        // OLD: Transitions the all mip levels in the image to read_only_optimal
+        // OLD: Transitions all mip levels in the image to read_only_optimal
         //VulkanTransitionImageLayout(VulkanTextureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VulkanMipLevels);
         
         // NEW: Generate all mipmap levels one by one, making layout transitions more granular
@@ -1967,8 +1971,6 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
         }
     }
     
-    VulkanCreateSwapchain();
-    
     // Vulkan: Semaphore creation
     {
         VkSemaphoreCreateInfo SemaphoreCreateInfo = {};
@@ -1992,6 +1994,8 @@ internal void VulkanInit(arena& Arena, app_data *Data, i32 Width, i32 Height)
             VulkanInFlightImages[i] = VK_NULL_HANDLE;
         }
     }
+    
+    VulkanCreateSwapchain();
 }
 
 internal void VulkanCleanup()
@@ -1999,13 +2003,13 @@ internal void VulkanCleanup()
     // wait the logical device to finish operations
     vkDeviceWaitIdle(VulkanDevice);
     
+    VulkanCleanupSwapchain();
+    
     for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         vkDestroySemaphore(VulkanDevice, VulkanRenderFinishedSemaphore[i], NULL);
         vkDestroySemaphore(VulkanDevice, VulkanImageAvailableSemaphore[i], NULL);
         vkDestroyFence(VulkanDevice, VulkanInFlightFences[i], NULL);
     }
-    
-    VulkanCleanupSwapchain();
     
     vkDestroySampler(VulkanDevice, VulkanTextureSampler, NULL);
     vkDestroyImageView(VulkanDevice, VulkanTextureImageView, NULL);
